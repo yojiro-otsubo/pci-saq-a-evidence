@@ -9,9 +9,19 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@sentry/nextjs": "^10.39.0",
+    "@supabase/ssr": "^0.8.0",
+    "@supabase/supabase-js": "^2.96.0",
+    "@trigger.dev/sdk": "^4.3.3",
+    "cheerio": "^1.2.0",
+    "clsx": "^2.1.1",
+    "date-fns": "^4.1.0",
     "next": "16.1.6",
+    "playwright": "^1.58.2",
     "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "react-dom": "19.2.3",
+    "resend": "^6.9.2",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -20,6 +30,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
+    "prettier": "^3.8.1",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
