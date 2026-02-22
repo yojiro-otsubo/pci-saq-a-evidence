@@ -26,7 +26,9 @@ export default async function AppLayout({
                 Dashboard
               </Link>
               <span className="mx-2 opacity-50">/</span>
-              <span className="opacity-60">Sites (coming soon)</span>
+              <Link href="/app/sites" className="hover:underline">
+                Sites
+              </Link>
             </nav>
           </div>
 
