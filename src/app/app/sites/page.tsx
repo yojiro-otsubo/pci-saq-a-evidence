@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import CreateSiteForm from "./ui/CreateSiteForm";
+import Link from "next/link";
 
 export default async function SitesPage() {
   const supabase = await createClient();
@@ -57,7 +58,9 @@ export default async function SitesPage() {
                 <div key={s.id} className="rounded-2xl border p-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
-                      <div className="font-medium">{s.domain}</div>
+                      <Link href={`/app/sites/${s.id}`} className="font-medium hover:underline">
+                        {s.domain}
+                      </Link>
                       <div className="mt-1 text-xs opacity-70 break-all">
                         id: {s.id}
                       </div>
