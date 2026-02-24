@@ -8,8 +8,9 @@ const BodySchema = z.object({
 
 export async function POST(
   req: Request,
-  { params }: { params: { id: string } }
+  ctx: { params: Promise<{ id: string }> }
 ) {
+  const { id: siteId } = await ctx.params;
   const supabase = await createClient();
 
   // auth required
@@ -25,7 +26,7 @@ export async function POST(
     return NextResponse.json({ error: "Invalid request" }, { status: 422 });
   }
 
-  const siteId = params.id;
+  //const siteId = params.id;
 
   // duplicate run check (queued/running)
   const { data: dup, error: dupErr } = await supabase

@@ -6,15 +6,16 @@ import ScanButton from "./ui/ScanButton";
 export default async function SiteDetailPage({
   params,
 }: {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }) {
+  const { id } = await params;
   const supabase = await createClient();
 
   // site
   const { data: site, error: siteErr } = await supabase
     .from("sites")
     .select("id, domain, classification, ruleset_version, status, created_at, updated_at")
-    .eq("id", params.id)
+    .eq("id", id)
     .maybeSingle();
 
   if (siteErr) {
