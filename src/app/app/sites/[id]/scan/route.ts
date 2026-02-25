@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
+import { tasks } from "@trigger.dev/sdk";
+import type { scanRunProcessor } from "@/trigger/scan-run";
 
 const BodySchema = z.object({
   mode: z.enum(["full", "quick"]).default("quick"),
@@ -76,6 +78,19 @@ export async function POST(
     }
 
     return NextResponse.json({ error: msg }, { status: 500 });
+  }
+
+  // Trigger task
+  try {
+    await tasks.trigger<typeof scanRunProcessor>("scan-run-processor", {
+      runId: run.id,
+    });
+  } catch (e: any) {
+    // タスク起動に失敗しても、runはqueuedで残る（後で手動リトライ可能）
+    return NextResponse.json(
+      { ok: true, run, warning: "Task trigger failed", detail: e?.message ?? String(e) },
+      { status: 200 }
+    );
   }
 
   return NextResponse.json({ ok: true, run }, { status: 200 });
