@@ -1,7 +1,14 @@
 import { defineConfig } from "@trigger.dev/sdk/v3";
+import { playwright } from "@trigger.dev/build/extensions/playwright";
 
 export default defineConfig({
   project: "proj_iptntoavvsnurhjgcxjn",
+  build: {
+    extensions: [
+      playwright(), // or with options if needed
+    ],
+    external: ["playwright-core", "playwright", "chromium-bidi"],
+  },
   runtime: "node",
   logLevel: "log",
   // The max compute seconds a task is allowed to run. If the task run exceeds this duration, it will be stopped.

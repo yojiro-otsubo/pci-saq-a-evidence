@@ -37,7 +37,7 @@ export default function ScanButton({
             const modeEl = document.getElementById("scan-mode") as HTMLSelectElement | null;
             const mode = (modeEl?.value ?? "quick") as "quick" | "full";
 
-            const res = await fetch(`/sites/${siteId}/scan`, {
+            const res = await fetch(`/app/sites/${siteId}/scan`, {
               method: "POST",
               headers: { "content-type": "application/json" },
               body: JSON.stringify({ mode }),
