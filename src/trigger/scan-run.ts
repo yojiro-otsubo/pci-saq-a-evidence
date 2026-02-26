@@ -25,17 +25,32 @@ function normalizeUrl(u: string) {
   return u.trim();
 }
 
+function truncate(msg: string, max = 900) {
+  return msg.length > max ? msg.slice(0, max) + "…" : msg;
+}
+
+function detectErrorCode(e: unknown): string {
+  const m = (e instanceof Error ? e.message : String(e)).toLowerCase();
+
+  if (m.includes("executable doesn't exist") || m.includes("playwright install")) {
+    return "PLAYWRIGHT_NOT_INSTALLED";
+  }
+  if (m.includes("timeout")) return "TIMEOUT";
+  if (m.includes("net::") || m.includes("navigation")) return "NAV_ERROR";
+  return "TASK_ERROR";
+}
+
 export const scanRunProcessor = task({
   id: "scan-run-processor",
   maxDuration: 300, // 5 min（MVP）
   retry: { maxAttempts: 3 },
-  run: async (payload: Payload, { ctx }) => {
+  run: async (payload: Payload) => {
     const supabase = createAdminClient();
 
-    // 1) run を取得（queued前提）
+    // run取得
     const { data: run, error: runErr } = await supabase
       .from("scan_runs")
-      .select("id, site_id, mode, status")
+      .select("id, site_id, mode, status, started_at")
       .eq("id", payload.runId)
       .maybeSingle();
 
@@ -43,52 +58,73 @@ export const scanRunProcessor = task({
       throw new Error(`scan_run not found: ${payload.runId}`);
     }
 
-    // 重複実行抑止（queued/running以外なら何もしない）
+    // queued/running 以外はスキップ
     if (!["queued", "running"].includes(run.status)) {
       return { ok: true, skipped: true, reason: `status=${run.status}` };
     }
 
-    // 2) running に更新
-    await supabase
-      .from("scan_runs")
-      .update({ status: "running", started_at: new Date().toISOString() })
-      .eq("id", run.id);
+    // 失敗時に確実に落とすためのヘルパー
+    const failRun = async (e: unknown) => {
+      const code = detectErrorCode(e);
+      const message = truncate(e instanceof Error ? e.message : String(e));
 
-    // 3) site + urls 取得
-    const { data: site } = await supabase
-      .from("sites")
-      .select("id, domain")
-      .eq("id", run.site_id)
-      .maybeSingle();
-
-    const { data: urls } = await supabase
-      .from("site_urls")
-      .select("url, kind")
-      .eq("site_id", run.site_id)
-      .order("created_at", { ascending: true });
-
-    const targets = (urls ?? []).map((u) => normalizeUrl(u.url)).filter(Boolean);
-
-    if (!site || targets.length === 0) {
       await supabase
         .from("scan_runs")
         .update({
           status: "failed",
           ended_at: new Date().toISOString(),
-          error_code: "NO_TARGETS",
-          error_message: "No monitored URLs.",
+          error_code: code,
+          error_message: message,
         })
         .eq("id", run.id);
-      return { ok: false, error: "No monitored URLs" };
-    }
+    };
 
-    // 4) Playwright で収集
-    const browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage();
+    // runningへ更新（started_atが空のときだけ入れる）
+    await supabase
+      .from("scan_runs")
+      .update({
+        status: "running",
+        started_at: run.started_at ?? new Date().toISOString(),
+      })
+      .eq("id", run.id);
 
-    const seen: SeenScript[] = [];
+    let browser: any | null = null;
 
     try {
+      // site + urls
+      const { data: site } = await supabase
+        .from("sites")
+        .select("id, domain")
+        .eq("id", run.site_id)
+        .maybeSingle();
+
+      const { data: urls } = await supabase
+        .from("site_urls")
+        .select("url, kind")
+        .eq("site_id", run.site_id)
+        .order("created_at", { ascending: true });
+
+      const targets = (urls ?? []).map((u) => normalizeUrl(u.url)).filter(Boolean);
+
+      if (!site || targets.length === 0) {
+        await supabase
+          .from("scan_runs")
+          .update({
+            status: "failed",
+            ended_at: new Date().toISOString(),
+            error_code: "NO_TARGETS",
+            error_message: "No monitored URLs.",
+          })
+          .eq("id", run.id);
+        return { ok: false, error: "No monitored URLs" };
+      }
+
+      // Playwright開始（launch失敗もcatchで拾う）
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage();
+
+      const seen: SeenScript[] = [];
+
       for (const targetUrl of targets) {
         await page.goto(targetUrl, { waitUntil: "networkidle", timeout: 60_000 });
         const html = await page.content();
@@ -137,159 +173,150 @@ export const scanRunProcessor = task({
           }
         }
 
-        // quick mode: 1URLだけで終了（MVP）
+        // quick mode: 1URLだけ
         if (run.mode === "quick") break;
       }
-    } catch (e: any) {
-      await browser.close();
-      await supabase
-        .from("scan_runs")
-        .update({
-          status: "failed",
-          ended_at: new Date().toISOString(),
-          error_code: "FETCH_ERROR",
-          error_message: e?.message ?? "Fetch failed",
-        })
-        .eq("id", run.id);
-      throw e;
-    } finally {
-      await browser.close();
-    }
 
-    // 5) scripts 台帳の upsert 相当（既存照合→insert/update）
-    // 既存 scripts を site_id 単位で取得（MVP：件数少ない前提）
-    const { data: existingScripts } = await supabase
-      .from("scripts")
-      .select("id, src, inline_snippet_hash, status")
-      .eq("site_id", run.site_id);
+      // scripts upsert
+      const { data: existingScripts } = await supabase
+        .from("scripts")
+        .select("id, src, inline_snippet_hash, status")
+        .eq("site_id", run.site_id);
 
-    const byKey = new Map<string, { id: string; status: string }>();
-    for (const s of existingScripts ?? []) {
-      const key = s.src ? `src:${s.src}` : `inl:${s.inline_snippet_hash}`;
-      byKey.set(key, { id: s.id, status: s.status });
-    }
+      const byKey = new Map<string, { id: string; status: string }>();
+      for (const s of existingScripts ?? []) {
+        const key = s.src ? `src:${s.src}` : `inl:${s.inline_snippet_hash}`;
+        byKey.set(key, { id: s.id, status: s.status });
+      }
 
-    const now = new Date().toISOString();
-    const seenKeys = new Set<string>();
+      const now = new Date().toISOString();
+      const seenKeys = new Set<string>();
 
-    // insert/update scripts + insert script_versions
-    for (const s of seen) {
-      const key = s.src ? `src:${s.src}` : `inl:${s.inlineHash}`;
-      seenKeys.add(key);
+      for (const s of seen) {
+        const key = s.src ? `src:${s.src}` : `inl:${s.inlineHash}`;
+        seenKeys.add(key);
 
-      const existing = byKey.get(key);
+        const existing = byKey.get(key);
 
-      if (!existing) {
-        // insert scripts
-        const { data: ins, error: insErr } = await supabase
-          .from("scripts")
-          .insert({
+        if (!existing) {
+          const { data: ins, error: insErr } = await supabase
+            .from("scripts")
+            .insert({
+              site_id: run.site_id,
+              src: s.src,
+              inline_snippet_hash: s.inlineHash,
+              integrity: s.integrity,
+              first_seen_at: now,
+              last_seen_at: now,
+              status: "active",
+            })
+            .select("id")
+            .single();
+
+          if (insErr) throw insErr;
+
+          await supabase.from("diff_events").insert({
             site_id: run.site_id,
-            src: s.src,
-            inline_snippet_hash: s.inlineHash,
-            integrity: s.integrity,
-            first_seen_at: now,
-            last_seen_at: now,
-            status: "active",
-          })
-          .select("id")
-          .single();
-
-        if (insErr) throw insErr;
-
-        // diff add
-        await supabase.from("diff_events").insert({
-          site_id: run.site_id,
-          run_id: run.id,
-          type: "add",
-          severity: "med",
-          script_id: ins.id,
-          summary: s.src ? `Added script: ${s.src}` : `Added inline script: ${s.inlineHash}`,
-        });
-
-        // version（contentHash取れた場合のみ）
-        if (s.contentHash) {
-          await supabase.from("script_versions").insert({
-            script_id: ins.id,
             run_id: run.id,
-            content_hash: s.contentHash,
-            size_bytes: s.sizeBytes,
+            type: "add",
+            severity: "med",
+            script_id: ins.id,
+            summary: s.src
+              ? `Added script: ${s.src}`
+              : `Added inline script: ${s.inlineHash}`,
           });
-        }
-      } else {
-        // update last_seen + active
-        await supabase
-          .from("scripts")
-          .update({ last_seen_at: now, status: "active", integrity: s.integrity })
-          .eq("id", existing.id);
 
-        // change判定：直近のhashと違うか
-        if (s.contentHash) {
-          const { data: prev } = await supabase
-            .from("script_versions")
-            .select("content_hash")
-            .eq("script_id", existing.id)
-            .order("fetched_at", { ascending: false })
-            .limit(1)
-            .maybeSingle();
-
-          if (!prev || prev.content_hash !== s.contentHash) {
+          if (s.contentHash) {
             await supabase.from("script_versions").insert({
-              script_id: existing.id,
+              script_id: ins.id,
               run_id: run.id,
               content_hash: s.contentHash,
               size_bytes: s.sizeBytes,
             });
+          }
+        } else {
+          await supabase
+            .from("scripts")
+            .update({ last_seen_at: now, status: "active", integrity: s.integrity })
+            .eq("id", existing.id);
 
-            // diff change（前が存在してhash差分がある場合だけ）
-            if (prev) {
-              await supabase.from("diff_events").insert({
-                site_id: run.site_id,
-                run_id: run.id,
-                type: "change",
-                severity: "high",
+          if (s.contentHash) {
+            const { data: prev } = await supabase
+              .from("script_versions")
+              .select("content_hash")
+              .eq("script_id", existing.id)
+              .order("fetched_at", { ascending: false })
+              .limit(1)
+              .maybeSingle();
+
+            if (!prev || prev.content_hash !== s.contentHash) {
+              await supabase.from("script_versions").insert({
                 script_id: existing.id,
-                summary: s.src
-                  ? `Changed script content: ${s.src}`
-                  : `Changed inline script: ${s.inlineHash}`,
+                run_id: run.id,
+                content_hash: s.contentHash,
+                size_bytes: s.sizeBytes,
               });
+
+              if (prev) {
+                await supabase.from("diff_events").insert({
+                  site_id: run.site_id,
+                  run_id: run.id,
+                  type: "change",
+                  severity: "high",
+                  script_id: existing.id,
+                  summary: s.src
+                    ? `Changed script content: ${s.src}`
+                    : `Changed inline script: ${s.inlineHash}`,
+                });
+              }
             }
           }
         }
       }
-    }
 
-    // removed判定：既存 active で今回見えてないもの
-    for (const s of existingScripts ?? []) {
-      const key = s.src ? `src:${s.src}` : `inl:${s.inline_snippet_hash}`;
-      if (s.status === "active" && !seenKeys.has(key)) {
-        await supabase
-          .from("scripts")
-          .update({ status: "removed", last_seen_at: now })
-          .eq("id", s.id);
+      // removed
+      for (const s of existingScripts ?? []) {
+        const key = s.src ? `src:${s.src}` : `inl:${s.inline_snippet_hash}`;
+        if (s.status === "active" && !seenKeys.has(key)) {
+          await supabase
+            .from("scripts")
+            .update({ status: "removed", last_seen_at: now })
+            .eq("id", s.id);
 
-        await supabase.from("diff_events").insert({
-          site_id: run.site_id,
-          run_id: run.id,
-          type: "remove",
-          severity: "med",
-          script_id: s.id,
-          summary: s.src ? `Removed script: ${s.src}` : `Removed inline script`,
-        });
+          await supabase.from("diff_events").insert({
+            site_id: run.site_id,
+            run_id: run.id,
+            type: "remove",
+            severity: "med",
+            script_id: s.id,
+            summary: s.src ? `Removed script: ${s.src}` : `Removed inline script`,
+          });
+        }
+      }
+
+      // success
+      await supabase
+        .from("scan_runs")
+        .update({ status: "success", ended_at: new Date().toISOString() })
+        .eq("id", run.id);
+
+      return {
+        ok: true,
+        runId: run.id,
+        siteId: run.site_id,
+        seenScripts: seen.length,
+      };
+    } catch (e) {
+      // ここが今回の重要修正：どんな例外でも必ず failed に落とす
+      await failRun(e);
+      throw e;
+    } finally {
+      // 二重close防止
+      try {
+        if (browser) await browser.close();
+      } catch {
+        // ignore
       }
     }
-
-    // 6) run を success に更新
-    await supabase
-      .from("scan_runs")
-      .update({ status: "success", ended_at: new Date().toISOString() })
-      .eq("id", run.id);
-
-    return {
-      ok: true,
-      runId: run.id,
-      siteId: run.site_id,
-      seenScripts: seen.length,
-    };
   },
 });
