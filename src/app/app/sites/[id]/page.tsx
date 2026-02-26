@@ -82,6 +82,14 @@ export default async function SiteDetailPage({
 
       <section className="rounded-2xl border p-6 shadow-sm">
         <h2 className="text-base font-semibold">Overview</h2>
+        <div className="mt-2 flex flex-wrap gap-2 text-sm">
+          <Link className="rounded-xl border px-3 py-1.5 hover:bg-black/5" href={`/app/sites/${site.id}/scripts`}>
+            Scripts
+          </Link>
+          <Link className="rounded-xl border px-3 py-1.5 hover:bg-black/5" href={`/app/sites/${site.id}/diffs`}>
+            Diffs
+          </Link>
+        </div>
         <div className="mt-4 grid gap-3 text-sm md:grid-cols-2">
           <div className="rounded-xl border p-3">
             <div className="text-xs opacity-60">Status</div>
