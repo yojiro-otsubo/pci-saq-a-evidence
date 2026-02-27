@@ -5,20 +5,25 @@ export async function GET(
   req: Request,
   ctx: { params: Promise<{ rid: string }> }
 
-
 ) {
   const supabase = await createClient();
   const { rid } = await ctx.params;
 
-  // auth required
   const { data: auth } = await supabase.auth.getUser();
   if (!auth?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const runId = rid;
+  const url = new URL(req.url);
+  const include = (url.searchParams.get("include") ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 
-  // run（RLSで自org以外は見えない）
+  const includeDiffs = include.includes("diffs");
+
+  // run
   const { data: run, error: runErr } = await supabase
     .from("scan_runs")
     .select(
@@ -27,46 +32,56 @@ export async function GET(
     .eq("id", runId)
     .maybeSingle();
 
-  if (runErr) {
-    return NextResponse.json({ error: runErr.message }, { status: 500 });
-  }
-  if (!run) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+  if (runErr) return NextResponse.json({ error: runErr.message }, { status: 500 });
+  if (!run) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  // site情報（任意だがあると便利）
+  // site（便利なので）
   const { data: site } = await supabase
     .from("sites")
     .select("id, domain, classification, ruleset_version, status")
     .eq("id", run.site_id)
     .maybeSingle();
 
-  // runに紐づく diff_events の件数
+  // steps（実体）
+  const { data: steps, error: stepsErr } = await supabase
+    .from("runs_steps")
+    .select("id, step, status, started_at, ended_at, message, created_at")
+    .eq("run_id", run.id)
+    .order("created_at", { ascending: true });
+
+  if (stepsErr) {
+    return NextResponse.json({ error: stepsErr.message }, { status: 500 });
+  }
+
+  // stats
   const { count: diffCount } = await supabase
     .from("diff_events")
     .select("id", { count: "exact", head: true })
     .eq("run_id", run.id);
 
-  // runに紐づく script_versions の件数
   const { count: versionCount } = await supabase
     .from("script_versions")
     .select("id", { count: "exact", head: true })
     .eq("run_id", run.id);
 
-  // site全体の scripts 件数（参考）
   const { count: scriptCount } = await supabase
     .from("scripts")
     .select("id", { count: "exact", head: true })
     .eq("site_id", run.site_id);
 
-  // steps は将来用（MVPでは空）
-  const steps: Array<{
-    name: string;
-    status: "ok" | "failed";
-    started_at?: string;
-    ended_at?: string;
-    message?: string;
-  }> = [];
+  // include=diffs のときだけ最新20件
+  const { data: diffs, error: diffsErr } = includeDiffs
+    ? await supabase
+        .from("diff_events")
+        .select("id, type, severity, summary, created_at, run_id, script_id")
+        .eq("run_id", run.id)
+        .order("created_at", { ascending: false })
+        .limit(20)
+    : { data: null as any, error: null as any };
+
+  if (diffsErr) {
+    return NextResponse.json({ error: diffsErr.message }, { status: 500 });
+  }
 
   return NextResponse.json(
     {
@@ -78,7 +93,8 @@ export async function GET(
         script_versions_in_run: versionCount ?? 0,
         diffs_in_run: diffCount ?? 0,
       },
-      steps,
+      steps: steps ?? [],
+      diffs: includeDiffs ? diffs ?? [] : undefined,
     },
     { status: 200 }
   );
