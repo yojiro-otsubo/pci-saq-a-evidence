@@ -63,10 +63,28 @@ export const scanRunProcessor = task({
       return { ok: true, skipped: true, reason: `status=${run.status}` };
     }
 
+    // runs_steps: insert-only の簡易ログ
+    const logStep = async (
+      step: string,
+      status: "running" | "success" | "failed",
+      message?: string | null
+    ) => {
+      const now = new Date().toISOString();
+      await supabase.from("runs_steps").insert({
+        run_id: run.id,
+        step,
+        status,
+        started_at: status === "running" ? now : null,
+        ended_at: status !== "running" ? now : null,
+        message: message ?? null,
+      });
+    };
+
     // 失敗時に確実に落とすためのヘルパー
     const failRun = async (e: unknown) => {
       const code = detectErrorCode(e);
       const message = truncate(e instanceof Error ? e.message : String(e));
+      await logStep("error", "failed", `${code}: ${message}`);
 
       await supabase
         .from("scan_runs")
@@ -87,6 +105,8 @@ export const scanRunProcessor = task({
         started_at: run.started_at ?? new Date().toISOString(),
       })
       .eq("id", run.id);
+
+    await logStep("start", "running", `mode=${run.mode}`);
 
     let browser: any | null = null;
 
@@ -118,6 +138,8 @@ export const scanRunProcessor = task({
           .eq("id", run.id);
         return { ok: false, error: "No monitored URLs" };
       }
+
+      await logStep("fetch_scripts", "running", `targets=${targets.length}`);
 
       // Playwright開始（launch失敗もcatchで拾う）
       browser = await chromium.launch({ headless: true });
@@ -176,6 +198,9 @@ export const scanRunProcessor = task({
         // quick mode: 1URLだけ
         if (run.mode === "quick") break;
       }
+
+      await logStep("fetch_scripts", "success", `seen=${seen.length}`);
+      await logStep("persist", "running", null);
 
       // scripts upsert
       const { data: existingScripts } = await supabase
@@ -293,6 +318,8 @@ export const scanRunProcessor = task({
           });
         }
       }
+
+      await logStep("persist", "success", null);
 
       // success
       await supabase
