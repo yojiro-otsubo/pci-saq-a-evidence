@@ -89,6 +89,9 @@ export default async function SiteDetailPage({
           <Link className="rounded-xl border px-3 py-1.5 hover:bg-black/5" href={`/app/sites/${site.id}/diffs`}>
             Diffs
           </Link>
+          <Link className="rounded-xl border px-3 py-1.5 hover:bg-black/5" href={`/app/sites/${site.id}/evidence`}>
+            Evidence
+          </Link>
         </div>
         <div className="mt-4 grid gap-3 text-sm md:grid-cols-2">
           <div className="rounded-xl border p-3">
