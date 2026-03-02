@@ -29,6 +29,10 @@ export default async function AppLayout({
               <Link href="/app/sites" className="hover:underline">
                 Sites
               </Link>
+              <span className="mx-2 opacity-50">/</span>
+              <Link href="/app/org/users" className="hover:underline">
+                Users
+              </Link>
             </nav>
           </div>
 
