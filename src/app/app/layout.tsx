@@ -13,6 +13,17 @@ export default async function AppLayout({
 
   if (!data?.user) redirect("/login");
 
+  const { data: me } = await supabase
+    .from("users")
+    .select("status")
+    .eq("auth_user_id", data.user.id)
+    .maybeSingle();
+
+  if (!me || me.status !== "active") {
+    await supabase.auth.signOut();
+    redirect("/login?e=disabled");
+  }
+
   return (
     <div className="min-h-dvh">
       <header className="border-b">

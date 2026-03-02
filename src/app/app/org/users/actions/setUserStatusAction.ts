@@ -31,6 +31,16 @@ export async function setUserStatusAction(input: unknown): Promise<
     return { ok: false, error: "Forbidden" };
   }
 
+  const { data: target } = await supabase
+    .from("users")
+    .select("role")
+    .eq("id", parsed.data.userId)
+    .maybeSingle();
+
+  if (target?.role === "owner") {
+    return { ok: false, error: "Owner status cannot be changed." };
+  }
+
   const { error } = await supabase
     .from("users")
     .update({ status: parsed.data.status })

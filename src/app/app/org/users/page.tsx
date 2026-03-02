@@ -86,7 +86,11 @@ export default async function OrgUsersPage() {
                       {u.created_at}
                     </td>
                     <td className="py-2 pr-4">
-                      <UserStatusButton userId={u.id} status={u.status} />
+                      {u.role === "owner" ? (
+                        <span className="text-xs opacity-60">-</span>
+                      ) : (
+                        <UserStatusButton userId={u.id} status={u.status} />
+                      )}
                     </td>
                   </tr>
                 ))}
